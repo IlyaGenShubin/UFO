@@ -10,6 +10,6 @@ pip install streamlit
 
 git clone https://github.com/IlyaGenShubin/UFO
 
-Запуск веб-инттрейфейса:
+Запуск веб-сервиса:
 
 streamlit run app.py
