@@ -6,6 +6,7 @@ import tempfile
 import os
 from pathlib import Path
 import numpy as np
+import csv
 
 def _display_detected_frames(conf, model, st_frame, image):
     """
@@ -14,7 +15,7 @@ def _display_detected_frames(conf, model, st_frame, image):
     :param model (YOLOv8): An instance of the `YOLOv8` class containing the YOLOv8 model.
     :param st_frame (Streamlit object): A Streamlit object to display the detected video.
     :param image (numpy array): A numpy array representing the video frame.
-    :return: None
+    :return: image with detections, list of detected objects (time, class_id)
     """
     # Resize the image to a standard size
     image = cv2.resize(image, (720, int(720 * (9 / 16))))
@@ -24,11 +25,14 @@ def _display_detected_frames(conf, model, st_frame, image):
 
     # Plot the detected objects on the video frame
     res_plotted = res[0].plot()
-    st_frame.image(res_plotted,
-                   caption='Detected Video',
-                   channels="BGR",
-                   use_column_width=True
-                   )
+    st_frame.image(res_plotted, caption='Detected Video', channels="BGR", use_column_width=True)
+    
+    # Extract detected classes
+    detected_objects = []
+    for box in res[0].boxes:
+        detected_objects.append((box.cls, box.conf))
+    
+    return res_plotted, detected_objects
 
 @st.cache_resource
 def load_model(model_path):
@@ -56,6 +60,12 @@ def save_detection_results(image_path, boxes, save_dir='detection'):
             x_center, y_center, width, height = box.xywhn[0]
             f.write(f"{class_id} {x_center} {y_center} {width} {height}\n")
 
+def save_csv_results(csv_file_path, detections):
+    with open(csv_file_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Time', 'Class'])
+        writer.writerows(detections)
+
 def infer_uploaded_image(conf, model):
     """
     Execute inference for uploaded image
@@ -63,10 +73,7 @@ def infer_uploaded_image(conf, model):
     :param model: An instance of the `YOLOv8` class containing the YOLOv8 model.
     :return: None
     """
-    source_img = st.sidebar.file_uploader(
-        label="Choose an image...",
-        type=("jpg", "jpeg", "png", 'bmp', 'webp')
-    )
+    source_img = st.sidebar.file_uploader(label="Choose an image...", type=("jpg", "jpeg", "png", 'bmp', 'webp'))
 
     col1, col2 = st.columns(2)
 
@@ -74,11 +81,7 @@ def infer_uploaded_image(conf, model):
         if source_img:
             uploaded_image = Image.open(source_img)
             # adding the uploaded image to the page with caption
-            st.image(
-                image=uploaded_image,
-                caption="Uploaded Image",
-                use_column_width=True
-            )
+            st.image(image=uploaded_image, caption="Uploaded Image", use_column_width=True)
 
     if source_img:
         if st.button("Execution"):
@@ -88,9 +91,7 @@ def infer_uploaded_image(conf, model):
                 res_plotted = res[0].plot()[:, :, ::-1]
 
                 with col2:
-                    st.image(res_plotted,
-                             caption="Detected Image",
-                             use_column_width=True                     )
+                    st.image(res_plotted, caption="Detected Image", use_column_width=True)
                     try:
                         with st.expander("Detection Results"):
                             for box in boxes:
@@ -105,8 +106,6 @@ def infer_uploaded_image(conf, model):
                         st.write("No image is uploaded yet!")
                         st.write(ex)
 
-
-
 def infer_uploaded_video(conf, model):
     """
     Execute inference for uploaded video
@@ -114,9 +113,7 @@ def infer_uploaded_video(conf, model):
     :param model: An instance of the `YOLOv8` class containing the YOLOv8 model.
     :return: None
     """
-    source_video = st.sidebar.file_uploader(
-        label="Choose a video..."
-    )
+    source_video = st.sidebar.file_uploader(label="Choose a video...")
 
     if source_video:
         st.video(source_video)
@@ -127,23 +124,46 @@ def infer_uploaded_video(conf, model):
                 try:
                     tfile = tempfile.NamedTemporaryFile()
                     tfile.write(source_video.read())
-                    vid_cap = cv2.VideoCapture(
-                        tfile.name)
+                    vid_cap = cv2.VideoCapture(tfile.name)
+                    st  
                     st_frame = st.empty()
-                    while (vid_cap.isOpened()):
+
+                    # Определяем параметры для записи видео
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    output_path = os.path.join('detection', 'output_video.mp4')
+                    out = cv2.VideoWriter(output_path, fourcc, 30.0, (720, int(720 * (9 / 16))))
+
+                    # Список для сохранения таймингов и классов
+                    detection_results = []
+
+                    frame_number = 0
+                    while vid_cap.isOpened():
                         success, image = vid_cap.read()
                         if success:
-                            _display_detected_frames(conf,
-                                                     model,
-                                                     st_frame,
-                                                     image
-                                                     )
+                            detected_frame, detected_objects = _display_detected_frames(conf, model, st_frame, image)
+
+                            # Записываем кадр в видеофайл
+                            out.write(detected_frame)
+
+                            # Сохраняем результаты детекции с таймингами (время в секундах, класс)
+                            for obj in detected_objects:
+                                detection_results.append((round(frame_number / 30.0, 1), obj[0]))  # 30.0 - кадров в секунду (FPS)
+
+                            frame_number += 1
                         else:
-                            vid_cap.release()
                             break
+
+                    vid_cap.release()
+                    out.release()
+
+                    # Сохраняем результаты в CSV файл
+                    csv_path = os.path.join('detection', 'detection_results.csv')
+                    save_csv_results(csv_path, detection_results)
+                    st.success(f"Video saved to {output_path}")
+                    st.success(f"CSV saved to {csv_path}")
+
                 except Exception as e:
                     st.error(f"Error loading video: {e}")
-
 
 def infer_uploaded_webcam(conf, model):
     """
@@ -153,22 +173,29 @@ def infer_uploaded_webcam(conf, model):
     :return: None
     """
     try:
-        flag = st.button(
-            label="Stop running"
-        )
+        flag = st.button(label="Stop running")
         vid_cap = cv2.VideoCapture(0)  # local camera
         st_frame = st.empty()
+        
+        # Определяем параметры для записи видео
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        output_path = os.path.join('detection', 'webcam_output_video.mp4')
+        out = cv2.VideoWriter(output_path, fourcc, 30.0, (720, int(720 * (9 / 16))))
+        
         while not flag:
             success, image = vid_cap.read()
             if success:
-                _display_detected_frames(
-                    conf,
-                    model,
-                    st_frame,
-                    image
-                )
+                detected_frame = _display_detected_frames(conf, model, st_frame, image)
+
+                # Записываем кадр в видеофайл
+                out.write(detected_frame)
             else:
-                vid_cap.release()
                 break
+
+        vid_cap.release()
+        out.release()
+        st.success(f"Webcam video saved to {output_path}")
+
     except Exception as e:
         st.error(f"Error loading video: {str(e)}")
+
